@@ -5,14 +5,16 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "prisma generate && tsc",
     "start": "node dist/index.js",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
     "lint": "eslint src --ext .ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "vercel:build": "prisma generate && tsc",
+    "set-webhook": "tsx scripts/set-webhook.ts"
   },
   "keywords": [
     "telegram",
@@ -43,6 +45,7 @@
     "@types/uuid": "^10.0.0",
     "@typescript-eslint/eslint-plugin": "^8.13.0",
     "@typescript-eslint/parser": "^8.13.0",
+    "@vercel/node": "^3.2.29",
     "eslint": "^9.14.0",
     "prisma": "^5.22.0",
     "tsx": "^4.19.2",
