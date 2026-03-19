@@ -1,0 +1,199 @@
+// prisma/schema.prisma
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id               String    @id @default(cuid())
+  telegramId       BigInt    @unique
+  username         String?
+  firstName        String?
+  lastName         String?
+  timezone         String    @default("UTC")
+  preferredAi      String?   // gemini, openai, claude
+  apiTokens        Json?     // encrypted tokens: { gemini: "...", openai: "...", claude: "..." }
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  
+  languages        UserLanguage[]
+  schedules        Schedule[]
+  lessons          Lesson[]
+  progress         Progress[]
+  vocabulary       Vocabulary[]
+  achievements     Achievement[]
+  activityLogs     ActivityLog[]
+  conversations    Conversation[]
+}
+
+model UserLanguage {
+  id               String   @id @default(cuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  targetLanguage   String   // es, fr, de, ja, zh, ko, etc.
+  nativeLanguage   String   // en, etc.
+  proficiencyLevel String   // beginner, intermediate, advanced
+  isActive         Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([userId, targetLanguage])
+  @@index([userId])
+}
+
+model Lesson {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  languagePair    String    // en-es, en-fr
+  lessonType      String    // vocabulary, grammar, conversation, reading, pronunciation, culture
+  title           String
+  content         Json      // Flexible JSON for lesson content
+  difficulty      Int       // 1-5
+  duration        String    // quick (5min), standard (15min), deep (30min)
+  completed       Boolean   @default(false)
+  score           Int?      // 0-100
+  aiProvider      String?   // which AI generated this
+  createdAt       DateTime  @default(now())
+  completedAt     DateTime?
+  
+  exercises       Exercise[]
+
+  @@index([userId])
+  @@index([languagePair])
+  @@index([lessonType])
+}
+
+model Exercise {
+  id              String   @id @default(cuid())
+  lessonId        String
+  lesson          Lesson   @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  type            String   // multiple_choice, fill_blank, translation, matching, free_response
+  question        String
+  options         Json?    // For multiple choice: ["a", "b", "c", "d"]
+  correctAnswer   String
+  explanation     String?
+  hints           Json?    // ["hint1", "hint2"]
+  order           Int
+  userAnswer      String?
+  isCorrect       Boolean?
+  answeredAt      DateTime?
+
+  @@index([lessonId])
+}
+
+model Schedule {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  languagePair    String   // en-es
+  frequency       String   // daily, weekdays, weekends, custom
+  daysOfWeek      Json?    // [0,1,2,3,4,5,6] - Sunday=0
+  preferredTime   String   // "09:00" in user's timezone
+  lessonDuration  String   // quick, standard, deep
+  lessonTypes     Json?    // ["vocabulary", "grammar"] or null for all
+  active          Boolean  @default(true)
+  pausedUntil     DateTime?
+  lastTriggered   DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([userId])
+  @@index([active])
+}
+
+model Progress {
+  id               String   @id @default(cuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  languagePair     String
+  wordsLearned     Int      @default(0)
+  lessonsCompleted Int      @default(0)
+  exercisesCorrect Int      @default(0)
+  exercisesTotal   Int      @default(0)
+  streak           Int      @default(0)
+  longestStreak    Int      @default(0)
+  lastActive       DateTime?
+  totalTime        Int      @default(0) // minutes
+  xp               Int      @default(0)
+  level            Int      @default(1)
+  updatedAt        DateTime @updatedAt
+
+  @@unique([userId, languagePair])
+  @@index([userId])
+}
+
+model Vocabulary {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  word            String
+  translation     String
+  languagePair    String    // en-es
+  pronunciation   String?
+  partOfSpeech    String?   // noun, verb, adjective, etc.
+  exampleSentence String?
+  exampleTranslation String?
+  context         String?
+  difficulty      Int       @default(1) // 1-5
+  mastery         Int       @default(0) // 0-100
+  nextReviewDate  DateTime?
+  reviewCount     Int       @default(0)
+  correctCount    Int       @default(0)
+  incorrectCount  Int       @default(0)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([userId, word, languagePair])
+  @@index([userId])
+  @@index([languagePair])
+  @@index([nextReviewDate])
+}
+
+model Achievement {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type            String   // streak_3, streak_7, streak_30, words_100, lessons_10, etc.
+  name            String
+  description     String
+  icon            String?
+  xpReward        Int      @default(0)
+  earnedAt        DateTime @default(now())
+
+  @@unique([userId, type])
+  @@index([userId])
+}
+
+model ActivityLog {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activityType    String   // lesson_start, lesson_complete, vocabulary_review, etc.
+  metadata        Json?
+  timestamp       DateTime @default(now())
+
+  @@index([userId])
+  @@index([timestamp])
+  @@index([userId, timestamp])
+}
+
+model Conversation {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  languagePair    String
+  scenario        String   // restaurant, shopping, directions, etc.
+  messages        Json     // Array of { role, content, translation? }
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([userId])
+  @@index([isActive])
+}

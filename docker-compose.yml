@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    environment:
+      - DATABASE_URL=postgresql://langbot:langbot_password@db:5432/language_learn_bot?schema=public
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - DEFAULT_AI_PROVIDER=${DEFAULT_AI_PROVIDER:-gemini}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - USE_WEBHOOK=${USE_WEBHOOK:-false}
+      - BOT_WEBHOOK_DOMAIN=${BOT_WEBHOOK_DOMAIN:-}
+      - BOT_WEBHOOK_PORT=${BOT_WEBHOOK_PORT:-3000}
+      - NODE_ENV=production
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    ports:
+      - "${BOT_WEBHOOK_PORT:-3000}:${BOT_WEBHOOK_PORT:-3000}"
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=langbot
+      - POSTGRES_PASSWORD=langbot_password
+      - POSTGRES_DB=language_learn_bot
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langbot -d language_learn_bot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Optional: Redis for caching (future enhancement)
+  # redis:
+  #   image: redis:7-alpine
+  #   restart: unless-stopped
+  #   volumes:
+  #     - redis_data:/data
+
+volumes:
+  postgres_data:
+  # redis_data:
