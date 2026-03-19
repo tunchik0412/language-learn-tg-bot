@@ -33,12 +33,14 @@ export interface GenerationOptions {
   temperature?: number;
   topP?: number;
   stopSequences?: string[];
+  responseFormat?: 'text' | 'json';
 }
 
 export const DEFAULT_GENERATION_OPTIONS: GenerationOptions = {
   maxTokens: 2048,
   temperature: 0.7,
   topP: 0.9,
+  responseFormat: 'json',
 };
 
 /**

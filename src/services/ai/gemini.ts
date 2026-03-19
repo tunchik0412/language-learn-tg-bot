@@ -10,7 +10,7 @@ export class GeminiProvider extends BaseAIProvider {
   override initialize(apiKey: string): void {
     super.initialize(apiKey);
     this.client = new GoogleGenerativeAI(apiKey);
-    this.model = this.client.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    this.model = this.client.getGenerativeModel({ model: 'gemini-2.5-flash-lite' });
   }
 
   async generateCompletion(messages: AIMessage[], options?: GenerationOptions): Promise<AIResponse> {
@@ -37,6 +37,7 @@ export class GeminiProvider extends BaseAIProvider {
           temperature: opts.temperature,
           topP: opts.topP,
           stopSequences: opts.stopSequences,
+          ...(opts.responseFormat === 'json' && { responseMimeType: 'application/json' }),
         },
         ...(systemMessage && {
           systemInstruction: { role: 'user', parts: [{ text: systemMessage.content }] },
@@ -60,7 +61,7 @@ export class GeminiProvider extends BaseAIProvider {
   async validateApiKey(apiKey: string): Promise<boolean> {
     try {
       const tempClient = new GoogleGenerativeAI(apiKey);
-      const tempModel = tempClient.getGenerativeModel({ model: 'gemini-2.5-flash' });
+      const tempModel = tempClient.getGenerativeModel({ model: 'gemini-2.5-flash-lite' });
       await tempModel.generateContent('Hello');
       return true;
     } catch (error) {

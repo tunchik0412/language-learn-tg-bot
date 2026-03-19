@@ -7,9 +7,84 @@ import { vocabularyService } from '../services/vocabulary.js';
 import { SUPPORTED_LANGUAGES, type LessonType, type LessonDuration } from '../types/index.js';
 
 /**
+ * Escape Markdown special characters for Telegram
+ */
+function escapeMarkdown(text: string): string {
+  // Escape underscores that are used as blanks (e.g., ___ becomes \_\_\_)
+  return text.replace(/_{2,}/g, match => match.split('').map(() => '\\_').join(''));
+}
+
+/**
+ * Strip Markdown formatting for fallback plain text
+ */
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/\*([^*]+)\*/g, '$1')  // *bold*
+    .replace(/_([^_]+)_/g, '$1')      // _italic_
+    .replace(/\\_/g, '_')             // escaped underscores
+    .replace(/`([^`]+)`/g, '$1');     // `code`
+}
+
+/**
+ * Safely send a message with Markdown, falling back to plain text if parsing fails
+ */
+async function safeSendMarkdown(
+  ctx: BotContext,
+  text: string,
+  extra?: Parameters<BotContext['reply']>[1]
+) {
+  try {
+    return await ctx.reply(text, { ...extra, parse_mode: 'Markdown' });
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("can't parse entities")) {
+      console.warn('Markdown parsing failed, falling back to plain text');
+      const plainText = stripMarkdown(text);
+      return await ctx.reply(plainText, { ...extra, parse_mode: undefined });
+    }
+    throw error;
+  }
+}
+
+/**
+ * Safely edit a message with Markdown, falling back to plain text if parsing fails
+ */
+async function safeEditMessage(
+  ctx: BotContext,
+  text: string,
+  extra?: Parameters<BotContext['editMessageText']>[1]
+) {
+  try {
+    return await ctx.editMessageText(text, { ...extra, parse_mode: 'Markdown' });
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("can't parse entities")) {
+      console.warn('Markdown parsing failed, falling back to plain text');
+      const plainText = stripMarkdown(text);
+      return await ctx.editMessageText(plainText, { ...extra, parse_mode: undefined });
+    }
+    throw error;
+  }
+}
+
+/**
+ * Safely try to delete a message (won't throw if it fails)
+ */
+async function tryDeleteMessage(ctx: BotContext, messageId?: number): Promise<void> {
+  try {
+    if (messageId) {
+      await ctx.telegram.deleteMessage(ctx.chat!.id, messageId);
+    } else if (ctx.message) {
+      await ctx.deleteMessage();
+    }
+  } catch {
+    // Silently fail - message may already be deleted or bot lacks permission
+  }
+}
+
+/**
  * /lesson command - Start a new lesson
  */
 bot.command('lesson', async (ctx: BotContext) => {
+  await tryDeleteMessage(ctx);
   const telegramId = BigInt(ctx.from!.id);
   const languages = await userService.getActiveLanguages(telegramId);
 
@@ -95,6 +170,8 @@ bot.action(/^lesson_duration_(.+)$/, async (ctx) => {
     lessonType: LessonType;
   };
 
+  // Store message ID to delete later
+  const loadingMsg = ctx.callbackQuery?.message?.message_id;
   await ctx.editMessageText('🔄 Generating your personalized lesson...');
 
   try {
@@ -107,6 +184,11 @@ bot.action(/^lesson_duration_(.+)$/, async (ctx) => {
         proficiencyLevel: proficiencyLevel as 'beginner' | 'intermediate' | 'advanced',
       }
     );
+
+    // Delete the "Generating..." message
+    if (loadingMsg) {
+      await tryDeleteMessage(ctx, loadingMsg);
+    }
 
     ctx.session.currentLesson = lesson.id;
     ctx.session.currentExercise = 0;
@@ -147,26 +229,19 @@ bot.action(/^lesson_duration_(.+)$/, async (ctx) => {
 
     // Send in chunks if too long
     const maxLength = 4000;
+    const keyboard = Markup.inlineKeyboard([
+      [Markup.button.callback('📝 Start Exercises', `start_exercises_${lesson.id}`)],
+      [Markup.button.callback('📖 Another Lesson', 'lesson_again')],
+    ]);
+
     if (message.length > maxLength) {
       const parts = splitMessage(message, maxLength);
       for (let i = 0; i < parts.length - 1; i++) {
-        await ctx.reply(parts[i], { parse_mode: 'Markdown' });
+        await safeSendMarkdown(ctx, parts[i]);
       }
-      await ctx.reply(parts[parts.length - 1], {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('📝 Start Exercises', `start_exercises_${lesson.id}`)],
-          [Markup.button.callback('📖 Another Lesson', 'lesson_again')],
-        ]),
-      });
+      await safeSendMarkdown(ctx, parts[parts.length - 1], keyboard);
     } else {
-      await ctx.reply(message, {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('📝 Start Exercises', `start_exercises_${lesson.id}`)],
-          [Markup.button.callback('📖 Another Lesson', 'lesson_again')],
-        ]),
-      });
+      await safeSendMarkdown(ctx, message, keyboard);
     }
   } catch (error) {
     console.error('Lesson generation error:', error);
@@ -203,11 +278,15 @@ bot.action(/^start_exercises_(.+)$/, async (ctx) => {
   ctx.session.currentLesson = lessonId;
   ctx.session.currentExercise = 0;
 
-  await sendNextExercise(ctx, lessonId, 0);
+  // Answer the callback but keep the lesson content visible
+  await ctx.answerCbQuery('Starting exercises...');
+  
+  // Send exercise as a NEW message (don't edit lesson content)
+  await sendNextExercise(ctx, lessonId, 0, true);
 });
 
 // Send exercise to user
-async function sendNextExercise(ctx: BotContext, lessonId: string, index: number) {
+async function sendNextExercise(ctx: BotContext, lessonId: string, index: number, isNewMessage = false) {
   const lesson = await lessonService.getLesson(lessonId);
   if (!lesson || !lesson.exercises[index]) {
     // No more exercises - complete the lesson
@@ -218,44 +297,58 @@ async function sendNextExercise(ctx: BotContext, lessonId: string, index: number
   const exercise = lesson.exercises[index];
   const total = lesson.exercises.length;
 
+  // Escape underscores in exercise question (blanks like ___ break Markdown)
+  const escapedQuestion = escapeMarkdown(exercise.question);
   let message = `📝 *Exercise ${index + 1}/${total}*\n\n`;
-  message += `${exercise.question}`;
+  message += escapedQuestion;
 
   if (exercise.type === 'multiple_choice' && exercise.options) {
     const options = exercise.options as string[];
-    const buttons = options.map((opt, i) => [
-      Markup.button.callback(
-        `${String.fromCharCode(65 + i)}. ${opt}`,
-        `answer_${exercise.id}_${opt}`
-      ),
-    ]);
+    // Store options in session for later retrieval (callback data has 64 byte limit)
+    ctx.session.tempData = { ...ctx.session.tempData, exerciseOptions: options, exerciseId: exercise.id };
+    
+    const buttons = options.map((opt, i) => {
+      // Truncate display text if too long, use index in callback
+      const displayText = opt.length > 30 ? opt.slice(0, 27) + '...' : opt;
+      return [
+        Markup.button.callback(
+          `${String.fromCharCode(65 + i)}. ${displayText}`,
+          `ans_${exercise.id}_${i}`
+        ),
+      ];
+    });
     buttons.push([Markup.button.callback('💡 Hint', `hint_${exercise.id}`)]);
 
-    await ctx.editMessageText(message, {
-      parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard(buttons),
-    });
+    if (isNewMessage) {
+      await safeSendMarkdown(ctx, message, Markup.inlineKeyboard(buttons));
+    } else {
+      await safeEditMessage(ctx, message, Markup.inlineKeyboard(buttons));
+    }
   } else if (exercise.type === 'fill_blank' || exercise.type === 'translation') {
     ctx.session.awaitingInput = 'answer';
     ctx.session.tempData = { exerciseId: exercise.id, lessonId, exerciseIndex: index };
 
-    await ctx.editMessageText(
-      message + '\n\n_Type your answer:_',
-      {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('💡 Hint', `hint_${exercise.id}`)],
-          [Markup.button.callback('⏭️ Skip', `skip_${exercise.id}`)],
-        ]),
-      }
-    );
+    const keyboard = Markup.inlineKeyboard([
+      [Markup.button.callback('💡 Hint', `hint_${exercise.id}`)],
+      [Markup.button.callback('⏭️ Skip', `skip_${exercise.id}`)],
+    ]);
+
+    if (isNewMessage) {
+      await safeSendMarkdown(ctx, message + '\n\n_Type your answer:_', keyboard);
+    } else {
+      await safeEditMessage(ctx, message + '\n\n_Type your answer:_', keyboard);
+    }
   }
 }
 
-// Handle multiple choice answer
-bot.action(/^answer_([^_]+)_(.+)$/, async (ctx) => {
+// Handle multiple choice answer (using option index)
+bot.action(/^ans_([^_]+)_(\d+)$/, async (ctx) => {
   const exerciseId = ctx.match[1];
-  const userAnswer = ctx.match[2];
+  const optionIndex = parseInt(ctx.match[2], 10);
+  
+  // Get the actual answer from stored options
+  const options = ctx.session.tempData?.exerciseOptions as string[] | undefined;
+  const userAnswer = options?.[optionIndex] || '';
 
   await processAnswer(ctx, exerciseId, userAnswer);
 });
@@ -265,6 +358,9 @@ bot.on('text', async (ctx, next) => {
   if (ctx.session.awaitingInput === 'answer' && ctx.session.tempData?.exerciseId) {
     const exerciseId = ctx.session.tempData.exerciseId as string;
     const userAnswer = ctx.message.text.trim();
+
+    // Delete the user's answer message to keep chat clean
+    await tryDeleteMessage(ctx);
 
     ctx.session.awaitingInput = undefined;
     await processAnswer(ctx, exerciseId, userAnswer);
@@ -280,12 +376,14 @@ async function processAnswer(ctx: BotContext, exerciseId: string, userAnswer: st
   const lessonId = ctx.session.currentLesson!;
   const currentIndex = ctx.session.currentExercise || 0;
 
+  // Escape dynamic content that could break Markdown
+  const correctAnswerEscaped = escapeMarkdown(result.correctAnswer || '');
   let message = result.isCorrect 
     ? '✅ *Correct!*\n\n'
-    : `❌ *Incorrect*\n\nThe correct answer was: *${result.correctAnswer}*\n\n`;
+    : `❌ *Incorrect*\n\nThe correct answer was: *${correctAnswerEscaped}*\n\n`;
 
   if (result.explanation) {
-    message += `💡 ${result.explanation}\n`;
+    message += `💡 ${escapeMarkdown(result.explanation)}\n`;
   }
 
   ctx.session.currentExercise = currentIndex + 1;
@@ -295,9 +393,9 @@ async function processAnswer(ctx: BotContext, exerciseId: string, userAnswer: st
   ]);
 
   if (ctx.callbackQuery) {
-    await ctx.editMessageText(message, { parse_mode: 'Markdown', ...keyboard });
+    await safeEditMessage(ctx, message, keyboard);
   } else {
-    await ctx.reply(message, { parse_mode: 'Markdown', ...keyboard });
+    await safeSendMarkdown(ctx, message, keyboard);
   }
 }
 
@@ -376,9 +474,9 @@ Keep up the great work! 💪
   ]);
 
   if (ctx.callbackQuery) {
-    await ctx.editMessageText(message, { parse_mode: 'Markdown', ...keyboard });
+    await safeEditMessage(ctx, message, keyboard);
   } else {
-    await ctx.reply(message, { parse_mode: 'Markdown', ...keyboard });
+    await safeSendMarkdown(ctx, message, keyboard);
   }
 
   ctx.session.currentLesson = undefined;
@@ -443,18 +541,22 @@ bot.action('view_progress', async (ctx) => {
  * Quick lesson type commands
  */
 bot.command('vocabulary', async (ctx: BotContext) => {
+  await tryDeleteMessage(ctx);
   await startQuickLesson(ctx, 'vocabulary');
 });
 
 bot.command('grammar', async (ctx: BotContext) => {
+  await tryDeleteMessage(ctx);
   await startQuickLesson(ctx, 'grammar');
 });
 
 bot.command('conversation', async (ctx: BotContext) => {
+  await tryDeleteMessage(ctx);
   await startQuickLesson(ctx, 'conversation');
 });
 
 bot.command('reading', async (ctx: BotContext) => {
+  await tryDeleteMessage(ctx);
   await startQuickLesson(ctx, 'reading');
 });
 
@@ -487,6 +589,7 @@ async function startQuickLesson(ctx: BotContext, lessonType: LessonType) {
  * /review command - Review vocabulary
  */
 bot.command('review', async (ctx: BotContext) => {
+  await tryDeleteMessage(ctx);
   const telegramId = BigInt(ctx.from!.id);
   const dueWords = await vocabularyService.getDueForReview(telegramId);
 

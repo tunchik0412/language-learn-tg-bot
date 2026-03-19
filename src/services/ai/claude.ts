@@ -21,10 +21,16 @@ export class ClaudeProvider extends BaseAIProvider {
       const systemMessage = messages.find(m => m.role === 'system');
       const chatMessages = messages.filter(m => m.role !== 'system');
 
+      // Claude doesn't have native JSON mode - add instruction to system prompt
+      let systemPrompt = systemMessage?.content || '';
+      if (opts.responseFormat === 'json') {
+        systemPrompt = `${systemPrompt}\n\nIMPORTANT: You must respond with valid JSON only. No markdown, no explanation, just the JSON object.`.trim();
+      }
+
       const response = await this.client!.messages.create({
         model: 'claude-3-5-sonnet-20241022',
         max_tokens: opts.maxTokens || 2048,
-        system: systemMessage?.content,
+        system: systemPrompt || undefined,
         messages: chatMessages.map(msg => ({
           role: msg.role as 'user' | 'assistant',
           content: msg.content,

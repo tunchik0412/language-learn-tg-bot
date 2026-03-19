@@ -47,14 +47,15 @@ export class LessonService {
           role: 'system',
           content: `You are an expert language teacher specializing in teaching ${targetName} to ${nativeName} speakers. 
 You create engaging, educational content tailored to the student's level.
-Always respond in valid JSON format as specified in the prompt.
+You MUST respond with valid JSON only - no markdown, no code blocks, no extra text.
 Include phonetic pronunciations for ${targetName} words when helpful.`,
         },
         {
           role: 'user',
           content: prompt,
         },
-      ]
+      ],
+      { responseFormat: 'json' }
     );
 
     // Parse the AI response
@@ -128,13 +129,12 @@ Include phonetic pronunciations for ${targetName} words when helpful.`,
     const typeInstructions: Record<LessonType, string> = {
       vocabulary: `
 Focus on teaching ${config.words} useful vocabulary words.
-For each word include:
-- The word in ${targetLang}
-- Translation in ${nativeLang}
-- Pronunciation guide (phonetic)
-- Part of speech
-- ${config.examples} example sentences with translations
-- Usage notes or memory tips`,
+Group words by category (verbs, nouns, adjectives, etc.) into sections.
+For EACH word, add it as an example with:
+- "original": The word in ${targetLang} with usage example sentence
+- "translation": Translation in ${nativeLang} (word + sentence translation)
+- "pronunciation": Phonetic pronunciation
+- "notes": Usage tips or memory hints`,
 
       grammar: `
 Explain a grammar concept appropriate for ${level} learners.
@@ -186,19 +186,19 @@ Include:
 
 ${typeInstructions[lessonType]}
 
-Respond with valid JSON in this exact format:
+IMPORTANT: Respond with ONLY valid JSON, no markdown code blocks. Use this exact structure:
 {
-  "introduction": "Brief introduction to the lesson",
+  "introduction": "Brief introduction in ${nativeLang}",
   "sections": [
     {
       "title": "Section title",
-      "content": "Main content",
+      "content": "Section description",
       "examples": [
         {
-          "original": "Example in ${targetLang}",
-          "translation": "Translation in ${nativeLang}",
-          "pronunciation": "Phonetic pronunciation",
-          "notes": "Optional notes"
+          "original": "Word or phrase in ${targetLang}: Example sentence using it",
+          "translation": "Word translation: Sentence translation in ${nativeLang}",
+          "pronunciation": "/phonetic/",
+          "notes": "Usage tips"
         }
       ]
     }
@@ -213,13 +213,16 @@ Respond with valid JSON in this exact format:
    */
   private parseAIResponse(response: string): LessonContent {
     try {
-      // Try to extract JSON from the response
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      // Try to extract JSON from the response (remove markdown code blocks if present)
+      let cleanResponse = response.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+      const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
-        return JSON.parse(jsonMatch[0]) as LessonContent;
+        const parsed = JSON.parse(jsonMatch[0]);
+        return this.normalizeContent(parsed);
       }
       throw new Error('No JSON found in response');
-    } catch {
+    } catch (error) {
+      console.error('Failed to parse AI response:', error);
       // Fallback structure if parsing fails
       return {
         introduction: response.slice(0, 200),
@@ -231,6 +234,33 @@ Respond with valid JSON in this exact format:
         ],
       };
     }
+  }
+
+  /**
+   * Normalize AI response to match expected LessonContent structure
+   */
+  private normalizeContent(parsed: Record<string, unknown>): LessonContent {
+    const sections = (parsed.sections as Record<string, unknown>[] || []).map(section => {
+      const examples = (section.examples as Record<string, unknown>[] || []).map(ex => ({
+        original: (ex.original || ex.english || ex.word || '') as string,
+        translation: (ex.translation || ex.ukrainian || ex.meaning || '') as string,
+        pronunciation: (ex.pronunciation || '') as string,
+        notes: (ex.notes || ex.usagenotes || ex.usage_notes || '') as string,
+      }));
+
+      return {
+        title: (section.title || '') as string,
+        content: (section.content || section.description || '') as string,
+        examples,
+      };
+    });
+
+    return {
+      introduction: (parsed.introduction || parsed.intro || '') as string,
+      sections,
+      summary: (parsed.summary || '') as string,
+      tips: (parsed.tips || []) as string[],
+    };
   }
 
   /**

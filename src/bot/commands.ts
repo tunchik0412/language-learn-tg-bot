@@ -6,9 +6,25 @@ import { progressService } from '../services/progress.js';
 import { SUPPORTED_LANGUAGES, type AIProvider } from '../types/index.js';
 
 /**
+ * Safely try to delete a message (won't throw if it fails)
+ */
+async function tryDeleteMessage(ctx: BotContext, messageId?: number): Promise<void> {
+  try {
+    if (messageId) {
+      await ctx.telegram.deleteMessage(ctx.chat!.id, messageId);
+    } else if (ctx.message) {
+      await ctx.deleteMessage();
+    }
+  } catch {
+    // Silently fail - message may already be deleted or bot lacks permission
+  }
+}
+
+/**
  * /start command - Welcome message and initial setup
  */
 bot.command('start', async (ctx: BotContext) => {
+  await tryDeleteMessage(ctx);
   const firstName = ctx.from?.first_name || 'there';
   
   const welcomeMessage = `
@@ -38,6 +54,7 @@ Type /help for all available commands.
  * /help command - Show all available commands
  */
 bot.command('help', async (ctx: BotContext) => {
+  await tryDeleteMessage(ctx);
   const helpMessage = `
 📖 *Available Commands*
 
@@ -82,6 +99,7 @@ bot.command('help', async (ctx: BotContext) => {
  * /setlanguage command - Set target language
  */
 bot.command('setlanguage', async (ctx: BotContext) => {
+  await tryDeleteMessage(ctx);
   const languageButtons = Object.entries(SUPPORTED_LANGUAGES)
     .map(([code, name]) => Markup.button.callback(`${name}`, `lang_target_${code}`));
   
@@ -167,6 +185,7 @@ bot.action(/^level_(.+)$/, async (ctx) => {
  * /settings command - Show settings menu
  */
 bot.command('settings', async (ctx: BotContext) => {
+  await tryDeleteMessage(ctx);
   const telegramId = BigInt(ctx.from!.id);
   const providers = await aiService.getUserProviders(telegramId);
   
@@ -344,6 +363,7 @@ bot.action('settings_back', async (ctx) => {
  * /progress command - Show user's learning progress
  */
 bot.command('progress', async (ctx: BotContext) => {
+  await tryDeleteMessage(ctx);
   const telegramId = BigInt(ctx.from!.id);
   const stats = await progressService.getUserStats(telegramId);
   
@@ -375,6 +395,7 @@ Keep up the great work! 💪
  * /languages command - Show active languages
  */
 bot.command('languages', async (ctx: BotContext) => {
+  await tryDeleteMessage(ctx);
   const telegramId = BigInt(ctx.from!.id);
   const languages = await userService.getActiveLanguages(telegramId);
 
@@ -466,6 +487,9 @@ bot.on('text', async (ctx, next) => {
   if (ctx.session.awaitingInput === 'timezone') {
     const timezone = ctx.message.text.trim();
 
+    // Delete the user's input message
+    await tryDeleteMessage(ctx);
+
     if (timezone === '/cancel') {
       ctx.session.awaitingInput = undefined;
       await ctx.reply('Cancelled. Use /settings to try again.');
@@ -496,6 +520,7 @@ bot.on('text', async (ctx, next) => {
  * /about command
  */
 bot.command('about', async (ctx: BotContext) => {
+  await tryDeleteMessage(ctx);
   await ctx.reply(
     `🌍 *Language Learning Bot*\n\n` +
     `An AI-powered language learning assistant that helps you master new languages ` +

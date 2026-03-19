@@ -27,6 +27,7 @@ export class OpenAIProvider extends BaseAIProvider {
         temperature: opts.temperature,
         top_p: opts.topP,
         stop: opts.stopSequences,
+        ...(opts.responseFormat === 'json' && { response_format: { type: 'json_object' } }),
       });
 
       const content = response.choices[0]?.message?.content || '';
